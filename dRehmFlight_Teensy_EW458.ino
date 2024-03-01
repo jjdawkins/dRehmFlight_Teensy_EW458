@@ -39,21 +39,6 @@ Everyone that sends me pictures and videos of your flying creations! -Nick
 #define USE_DSM_RX
 static const char num_DSM_channels = 6; //If using DSM RX, change this to match the number of transmitter channels you have
 
-//Uncomment only one IMU
-#define USE_MPU6050_I2C //Default
-//#define USE_MPU9250_SPI
-
-//Uncomment only one full scale gyro range (deg/sec)
-#define GYRO_250DPS //Default
-//#define GYRO_500DPS
-//#define GYRO_1000DPS
-//#define GYRO_2000DPS
-
-//Uncomment only one full scale accelerometer range (G's)
-#define ACCEL_2G //Default
-//#define ACCEL_4G
-//#define ACCEL_8G
-//#define ACCEL_16G
 
 // For SPI mode, we need a CS pin
 #define BNO08X_CS 10
@@ -89,75 +74,12 @@ static const char num_DSM_channels = 6; //If using DSM RX, change this to match 
 Adafruit_BNO08x  bno08x(BNO08X_RESET);
 sh2_SensorValue_t sensorValue;
 
-/*#ifdef FAST_MODE
-  // Top frequency is reported to be 1000Hz (but freq is somewhat variable)
-  sh2_SensorId_t reportType = SH2_GYRO_INTEGRATED_RV;
-  long reportIntervalUs = 2000;
-#else
-  // Top frequency is about 250Hz but this report is more accurate
-  sh2_SensorId_t reportType = SH2_ARVR_STABILIZED_RV;
-  long reportIntervalUs = 5000;
-#endif
-void setReports(sh2_SensorId_t reportType, long report_interval) {
-  Serial.println("Setting desired reports");
-  if (! bno08x.enableReport(reportType, report_interval)) {
-    Serial.println("Could not enable stabilized remote vector");
-  }
-}*/
 
 //========================================================================================================================//
 
 
 
 //Setup gyro and accel full scale value selection and scale factor
-
-#if defined USE_MPU6050_I2C
-  #define GYRO_FS_SEL_250    MPU6050_GYRO_FS_250
-  #define GYRO_FS_SEL_500    MPU6050_GYRO_FS_500
-  #define GYRO_FS_SEL_1000   MPU6050_GYRO_FS_1000
-  #define GYRO_FS_SEL_2000   MPU6050_GYRO_FS_2000
-  #define ACCEL_FS_SEL_2     MPU6050_ACCEL_FS_2
-  #define ACCEL_FS_SEL_4     MPU6050_ACCEL_FS_4
-  #define ACCEL_FS_SEL_8     MPU6050_ACCEL_FS_8
-  #define ACCEL_FS_SEL_16    MPU6050_ACCEL_FS_16
-#elif defined USE_MPU9250_SPI
-  #define GYRO_FS_SEL_250    mpu9250.GYRO_RANGE_250DPS
-  #define GYRO_FS_SEL_500    mpu9250.GYRO_RANGE_500DPS
-  #define GYRO_FS_SEL_1000   mpu9250.GYRO_RANGE_1000DPS                                                        
-  #define GYRO_FS_SEL_2000   mpu9250.GYRO_RANGE_2000DPS
-  #define ACCEL_FS_SEL_2     mpu9250.ACCEL_RANGE_2G
-  #define ACCEL_FS_SEL_4     mpu9250.ACCEL_RANGE_4G
-  #define ACCEL_FS_SEL_8     mpu9250.ACCEL_RANGE_8G
-  #define ACCEL_FS_SEL_16    mpu9250.ACCEL_RANGE_16G
-#endif
-  
-#if defined GYRO_250DPS
-  #define GYRO_SCALE GYRO_FS_SEL_250
-  #define GYRO_SCALE_FACTOR 131.0
-#elif defined GYRO_500DPS
-  #define GYRO_SCALE GYRO_FS_SEL_500
-  #define GYRO_SCALE_FACTOR 65.5
-#elif defined GYRO_1000DPS
-  #define GYRO_SCALE GYRO_FS_SEL_1000
-  #define GYRO_SCALE_FACTOR 32.8
-#elif defined GYRO_2000DPS
-  #define GYRO_SCALE GYRO_FS_SEL_2000
-  #define GYRO_SCALE_FACTOR 16.4
-#endif
-
-#if defined ACCEL_2G
-  #define ACCEL_SCALE ACCEL_FS_SEL_2
-  #define ACCEL_SCALE_FACTOR 16384.0
-#elif defined ACCEL_4G
-  #define ACCEL_SCALE ACCEL_FS_SEL_4
-  #define ACCEL_SCALE_FACTOR 8192.0
-#elif defined ACCEL_8G
-  #define ACCEL_SCALE ACCEL_FS_SEL_8
-  #define ACCEL_SCALE_FACTOR 4096.0
-#elif defined ACCEL_16G
-  #define ACCEL_SCALE ACCEL_FS_SEL_16
-  #define ACCEL_SCALE_FACTOR 2048.0
-#endif
 
 
 struct euler_t {
@@ -184,35 +106,21 @@ float B_accel = 0.14;     //Accelerometer LP filter paramter, (MPU6050 default: 
 float B_gyro = 0.1;       //Gyro LP filter paramter, (MPU6050 default: 0.1. MPU9250 default: 0.17)
 float B_mag = 1.0;        //Magnetometer LP filter parameter
 
-//Magnetometer calibration parameters - if using MPU9250, uncomment calibrateMagnetometer() in void setup() to get these values, else just ignore these
-float MagErrorX = 0.0;
-float MagErrorY = 0.0; 
-float MagErrorZ = 0.0;
-float MagScaleX = 1.0;
-float MagScaleY = 1.0;
-float MagScaleZ = 1.0;
 
-//IMU calibration parameters - calibrate IMU using calculate_IMU_error() in the void setup() to get these values, then comment out calculate_IMU_error()
-float AccErrorX = 0.0;
-float AccErrorY = 0.0;
-float AccErrorZ = 0.0;
-float GyroErrorX = 0.0;
-float GyroErrorY= 0.0;
-float GyroErrorZ = 0.0;
 
 //Controller parameters (take note of defaults before modifying!): 
-float i_limit = 25.0;     //Integrator saturation level, mostly for safety (default 25.0)
-float maxRoll = 30.0*DEG2RAD;     //Max roll angle in degrees for angle mode (maximum ~70 degrees), deg/sec for rate mode 
-float maxPitch = 30.0*DEG2RAD;    //Max pitch angle in degrees for angle mode (maximum ~70 degrees), deg/sec for rate mode
+float i_limit = 17.0;     //Integrator saturation level, mostly for safety (default 25.0)
+float maxRoll = 20.0*DEG2RAD;     //Max roll angle in degrees for angle mode (maximum ~70 degrees), deg/sec for rate mode 
+float maxPitch = 20.0*DEG2RAD;    //Max pitch angle in degrees for angle mode (maximum ~70 degrees), deg/sec for rate mode
 float maxYaw = 160.0*DEG2RAD;     //Max yaw rate in deg/sec
 
 float Kp_roll_angle = 0.2;    //Roll P-gain - angle mode 
 float Ki_roll_angle = 0.1;    //Roll I-gain - angle mode
-float Kd_roll_angle = 0.05;   //Roll D-gain - angle mode (has no effect on controlANGLE2)
+float Kd_roll_angle = 0.03;   //Roll D-gain - angle mode (has no effect on controlANGLE2)
 float B_loop_roll = 0.9;      //Roll damping term for controlANGLE2(), lower is more damping (must be between 0 to 1)
 float Kp_pitch_angle = 0.2;   //Pitch P-gain - angle mode
 float Ki_pitch_angle = 0.1;   //Pitch I-gain - angle mode
-float Kd_pitch_angle = 0.05;  //Pitch D-gain - angle mode (has no effect on controlANGLE2)
+float Kd_pitch_angle = 0.03;  //Pitch D-gain - angle mode (has no effect on controlANGLE2)
 float B_loop_pitch = 0.9;     //Pitch damping term for controlANGLE2(), lower is more damping (must be between 0 to 1)
 
 float Kp_roll_rate = 0.15;    //Roll P-gain - rate mode
@@ -222,8 +130,8 @@ float Kp_pitch_rate = 0.15;   //Pitch P-gain - rate mode
 float Ki_pitch_rate = 0.2;    //Pitch I-gain - rate mode
 float Kd_pitch_rate = 0.0002; //Pitch D-gain - rate mode (be careful when increasing too high, motors will begin to overheat!)
 
-float Kp_yaw = 0.3;           //Yaw P-gain
-float Ki_yaw = 0.05;          //Yaw I-gain
+float Kp_yaw = 0.15;           //Yaw P-gain
+float Ki_yaw = 0.025;          //Yaw I-gain
 float Kd_yaw = 0.00015;       //Yaw D-gain (be careful when increasing too high, motors will begin to overheat!)
 
 
