@@ -1,0 +1,5 @@
+{
+    "configuration": "usb=serial,speed=600,opt=o2std,keys=en-us",
+    "board": "teensy:avr:teensy40",
+    "sketch": "dRehmFlight_Teensy_BETA_1.3.ino"
+}
