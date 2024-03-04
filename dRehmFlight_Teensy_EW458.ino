@@ -48,6 +48,9 @@ static const char num_DSM_channels = 6; //If using DSM RX, change this to match 
 #define DEG2RAD (3.14159/180)
 #define RAD2DEG (180/3.14159)
 
+#define NUMPIXELS 5
+
+
 
 //========================================================================================================================//
 
@@ -61,6 +64,7 @@ static const char num_DSM_channels = 6; //If using DSM RX, change this to match 
 #include <PWMServo.h> //Commanding any extra actuators, installed with teensyduino installer
 
 #include <Adafruit_BNO08x.h>
+#include "src/Adafruit_DotStar/Adafruit_DotStar.h"
 
 #if defined USE_SBUS_RX
   #include "src/SBUS/SBUS.h"   //sBus interface
@@ -74,12 +78,18 @@ static const char num_DSM_channels = 6; //If using DSM RX, change this to match 
 Adafruit_BNO08x  bno08x(BNO08X_RESET);
 sh2_SensorValue_t sensorValue;
 
-
+Adafruit_DotStar leds(NUMPIXELS,5,3,DOTSTAR_RGB);
 //========================================================================================================================//
 
 
 
 //Setup gyro and accel full scale value selection and scale factor
+
+int red = 0xFF;
+int yellow = 0xFFFF;
+int green = 0xFF00;
+int white = 0xFFFFFF;
+int off = 0x00;
 
 
 struct euler_t {
@@ -109,9 +119,9 @@ float B_mag = 1.0;        //Magnetometer LP filter parameter
 
 
 //Controller parameters (take note of defaults before modifying!): 
-float i_limit = 17.0;     //Integrator saturation level, mostly for safety (default 25.0)
-float maxRoll = 20.0*DEG2RAD;     //Max roll angle in degrees for angle mode (maximum ~70 degrees), deg/sec for rate mode 
-float maxPitch = 20.0*DEG2RAD;    //Max pitch angle in degrees for angle mode (maximum ~70 degrees), deg/sec for rate mode
+float i_limit = 25.0;     //Integrator saturation level, mostly for safety (default 25.0)
+float maxRoll = 25.0*DEG2RAD;     //Max roll angle in degrees for angle mode (maximum ~70 degrees), deg/sec for rate mode 
+float maxPitch = 25.0*DEG2RAD;    //Max pitch angle in degrees for angle mode (maximum ~70 degrees), deg/sec for rate mode
 float maxYaw = 160.0*DEG2RAD;     //Max yaw rate in deg/sec
 
 float Kp_roll_angle = 0.2;    //Roll P-gain - angle mode 
@@ -232,6 +242,7 @@ int s1_command_PWM, s2_command_PWM, s3_command_PWM, s4_command_PWM, s5_command_P
 
 //Flight status
 bool armedFly = false;
+bool armed = false;
 
 
 void quaternionToEuler(float qr, float qi, float qj, float qk, euler_t* ypr, bool degrees = false) {
@@ -323,6 +334,9 @@ void setup() {
   
   delay(5);
 
+  leds.begin();
+  leds.show();
+
   //calibrateESCs(); //PROPS OFF. Uncomment this to calibrate your ESCs by setting throttle stick to max, powering on, and lowering throttle to zero after the beeps
   //Code will not proceed past here if this function is uncommented!
 
@@ -358,7 +372,7 @@ void loop() {
   loopBlink(); //Indicate we are in main loop with short blink every 1.5 seconds
 
   //Print data at 100hz (uncomment one at a time for troubleshooting) - SELECT ONE:
-  //printRadioData();     //Prints radio pwm values (expected: 1000 to 2000)
+  printRadioData();     //Prints radio pwm values (expected: 1000 to 2000)
   //printDesiredState();  //Prints desired vehicle state commanded in either degrees or deg/sec (expected: +/- maxAXIS for roll, pitch, yaw; 0 to 1 for throttle)
   //printGyroData();      //Prints filtered gyro data direct from IMU (expected: ~ -250 to 250, 0 at rest)
   //printAccelData();     //Prints filtered accelerometer data direct from IMU (expected: ~ -2 to 2; x,y 0 when level, z 1 when level)
@@ -368,11 +382,11 @@ void loop() {
   //printMotorCommands(); //Prints the values being written to the motors (expected: 120 to 250)
   //printServoCommands(); //Prints the values being written to the servos (expected: 0 to 180)
   //printLoopRate();      //Prints the time between loops in microseconds (expected: microseconds between loop iterations)
-
+  //printStatusData();
 
 
   // Get arming status
-  armedStatus(); //Check if the throttle cut is off and throttle is low.
+  updateStatus(); //Check if the throttle cut is off and throttle is low.
 
   //Get vehicle state
   getIMUdata(); //Pulls raw gyro, accelerometer, and magnetometer data from IMU and LP filters to remove noise
@@ -392,6 +406,8 @@ void loop() {
   //Throttle cut check
   throttleCut(); //Directly sets motor commands to low based on state of ch5
 
+  //Set Status LEDS
+  setLEDS();
   //Command actuators
   commandMotors(); //Sends command pulses to each motor pin using OneShot125 protocol
   servo1.write(s1_command_PWM); //Writes PWM value to servo object
@@ -454,11 +470,17 @@ void controlMixer() {
  
 }
 
-void armedStatus() {
+void updateStatus() {
   //DESCRIPTION: Check if the throttle cut is off and the throttle input is low to prepare for flight.
-  if ((channel_5_pwm < 1500) && (channel_1_pwm < 1050)) {
-    armedFly = true;
+  if ((channel_5_pwm < 1500) && (channel_1_pwm < 1200)) {
+    armed = true;
   }
+
+  if(channel_5_pwm >= 1500){
+
+    armed = false;
+  }
+
 }
 
 void IMUinit() {
@@ -650,11 +672,18 @@ void controlANGLE() {
    */
   
   //Roll
+
+// Set Integrators to zero drone is not armed.
+  if(!armed){
+    integral_roll = 0;
+    integral_pitch = 0;
+    integral_yaw = 0;
+  }
+// ROLL
   error_roll = roll_des - roll_IMU;
   integral_roll = integral_roll_prev + error_roll*dt;
-  if (channel_1_pwm < 1060) {   //Don't let integrator build if throttle is too low
-    integral_roll = 0;
-  }
+ // if (channel_1_pwm < 1060) {   //Don't let integrator build if throttle is too low
+ // }
   integral_roll = constrain(integral_roll, -i_limit, i_limit); //Saturate integrator to prevent unsafe buildup
   derivative_roll = GyroX;
   roll_PID = (Kp_roll_angle*error_roll + Ki_roll_angle*integral_roll - Kd_roll_angle*derivative_roll); //Scaled by .01 to bring within -1 to 1 range
@@ -662,9 +691,9 @@ void controlANGLE() {
   //Pitch
   error_pitch = pitch_des - pitch_IMU;
   integral_pitch = integral_pitch_prev + error_pitch*dt;
-  if (channel_1_pwm < 1060) {   //Don't let integrator build if throttle is too low
-    integral_pitch = 0;
-  }
+ // if (channel_1_pwm < 1060) {   //Don't let integrator build if throttle is too low
+  //  integral_pitch = 0;
+ // }
   integral_pitch = constrain(integral_pitch, -i_limit, i_limit); //Saturate integrator to prevent unsafe buildup
   derivative_pitch = GyroY;
   pitch_PID = (Kp_pitch_angle*error_pitch + Ki_pitch_angle*integral_pitch - Kd_pitch_angle*derivative_pitch); //Scaled by .01 to bring within -1 to 1 range
@@ -672,9 +701,9 @@ void controlANGLE() {
   //Yaw, stablize on rate from GyroZ
   error_yaw = yaw_des - GyroZ;
   integral_yaw = integral_yaw_prev + error_yaw*dt;
-  if (channel_1_pwm < 1060) {   //Don't let integrator build if throttle is too low
-    integral_yaw = 0;
-  }
+  //if (channel_1_pwm < 1060) {   //Don't let integrator build if throttle is too low
+  //  integral_yaw = 0;
+ // }
   integral_yaw = constrain(integral_yaw, -i_limit, i_limit); //Saturate integrator to prevent unsafe buildup
   derivative_yaw = (error_yaw - error_yaw_prev)/dt; 
   yaw_PID = (Kp_yaw*error_yaw + Ki_yaw*integral_yaw + Kd_yaw*derivative_yaw); //Scaled by .01 to bring within -1 to 1 range
@@ -1152,6 +1181,7 @@ void switchRollYaw(int reverseRoll, int reverseYaw) {
   roll_des = reverseRoll*switch_holder;
 }
 
+
 void throttleCut() {
   //DESCRIPTION: Directly set actuator outputs to minimum value if triggered
   /*
@@ -1164,8 +1194,8 @@ void throttleCut() {
       channel_5_pwm is HIGH then throttle cut is ON and throttle value = 120 only. (ThrottleCut is ACTIVATED), (drone is DISARMED)
   */
 
-  if (channel_5_pwm > 1500) {
-    armedFly = false;
+  if (!armed) {
+
     m1_command_PWM = 120;
     m2_command_PWM = 120;
     m3_command_PWM = 120;
@@ -1223,6 +1253,20 @@ void loopRate(int freq) {
   }
 }
 
+void setLEDS(){
+  
+  if(armed){
+    leds.fill(green,0,5);
+    leds.show();
+
+  }else{
+    leds.fill(yellow,0,5);
+    leds.show();
+
+  }
+
+}
+
 void loopBlink() {
   //DESCRIPTION: Blink LED on board to indicate main loop is running
   /*
@@ -1253,7 +1297,13 @@ void setupBlink(int numBlinks,int upTime, int downTime) {
   }
 }
 
-
+void printStatusData() {
+  if (current_time - print_counter > 10000) {
+    print_counter = micros();
+    Serial.print(F(" Armed Flag:"));
+    Serial.println(armed);
+  }
+}
 
 void printRadioData() {
   if (current_time - print_counter > 10000) {
