@@ -75,10 +75,7 @@ static const char num_DSM_channels = 6; //If using DSM RX, change this to match 
 #endif
 
 
-Adafruit_BNO08x  bno08x(BNO08X_RESET);
-sh2_SensorValue_t sensorValue;
 
-Adafruit_DotStar leds(NUMPIXELS,5,3,DOTSTAR_RGB);
 //========================================================================================================================//
 
 
@@ -123,6 +120,8 @@ float i_limit = 25.0;     //Integrator saturation level, mostly for safety (defa
 float maxRoll = 25.0*DEG2RAD;     //Max roll angle in degrees for angle mode (maximum ~70 degrees), deg/sec for rate mode 
 float maxPitch = 25.0*DEG2RAD;    //Max pitch angle in degrees for angle mode (maximum ~70 degrees), deg/sec for rate mode
 float maxYaw = 160.0*DEG2RAD;     //Max yaw rate in deg/sec
+uint throt_lim = 1200;
+
 
 float Kp_roll_angle = 0.2;    //Roll P-gain - angle mode 
 float Ki_roll_angle = 0.1;    //Roll I-gain - angle mode
@@ -161,12 +160,12 @@ const int ch5Pin = 21; //gear (throttle cut)
 const int ch6Pin = 22; //aux1 (free aux channel)
 const int PPM_Pin = 15;
 //OneShot125 ESC pin outputs:
-const int m1Pin = 0;
+const int buzzPin = 0;
 const int m2Pin = 1;
 const int m3Pin = 2;
-const int m4Pin = 3;
+const int ledDi = 3;
 const int m5Pin = 4;
-const int m6Pin = 5;
+const int ledCl = 5;
 //PWM servo or ESC outputs:
 const int servo1Pin = 6;
 const int servo2Pin = 7;
@@ -185,6 +184,8 @@ PWMServo servo7;
 
 
 
+
+
 //========================================================================================================================//
 
 
@@ -196,6 +197,10 @@ float dt;
 unsigned long current_time, prev_time;
 unsigned long print_counter, serial_counter;
 unsigned long blink_counter, blink_delay;
+unsigned long led_timer, led_delay;
+unsigned long buzzer_timer, buzzer_delay;
+
+bool buzzerOn;
 bool blinkAlternate;
 
 //Radio communication:
@@ -243,6 +248,13 @@ int s1_command_PWM, s2_command_PWM, s3_command_PWM, s4_command_PWM, s5_command_P
 //Flight status
 bool armedFly = false;
 bool armed = false;
+bool armed_last = false;
+
+
+Adafruit_BNO08x  bno08x(BNO08X_RESET);
+sh2_SensorValue_t sensorValue;
+
+Adafruit_DotStar leds(NUMPIXELS,ledCl,ledDi,DOTSTAR_RGB);
 
 
 void quaternionToEuler(float qr, float qi, float qj, float qk, euler_t* ypr, bool degrees = false) {
@@ -285,12 +297,12 @@ void setup() {
   
   //Initialize all pins
   pinMode(13, OUTPUT); //Pin 13 LED blinker on board, do not modify 
-  pinMode(m1Pin, OUTPUT);
-  pinMode(m2Pin, OUTPUT);
-  pinMode(m3Pin, OUTPUT);
-  pinMode(m4Pin, OUTPUT);
-  pinMode(m5Pin, OUTPUT);
-  pinMode(m6Pin, OUTPUT);
+  pinMode(buzzPin, OUTPUT);
+ // pinMode(m2Pin, OUTPUT);
+  pinMode(ledDi, OUTPUT);
+ // pinMode(m4Pin, OUTPUT);
+  pinMode(ledCl, OUTPUT);
+//  pinMode(m6Pin, OUTPUT);
   servo1.attach(servo1Pin, 900, 2100); //Pin, min PWM value, max PWM value
   servo2.attach(servo2Pin, 900, 2100);
   servo3.attach(servo3Pin, 900, 2100);
@@ -299,6 +311,8 @@ void setup() {
   servo6.attach(servo6Pin, 900, 2100);
   servo7.attach(servo7Pin, 900, 2100);
 
+  buzzer_delay = 3000000;
+  buzzer_timer = micros();
   //Set built in LED to turn on to signal startup
   digitalWrite(13, HIGH);
 
@@ -306,7 +320,7 @@ void setup() {
 
   //Initialize radio communication
   radioSetup();
-  
+
   //Set radio channels to default (safe) values before entering main loop
   channel_1_pwm = channel_1_fs;
   channel_2_pwm = channel_2_fs;
@@ -340,14 +354,6 @@ void setup() {
   //calibrateESCs(); //PROPS OFF. Uncomment this to calibrate your ESCs by setting throttle stick to max, powering on, and lowering throttle to zero after the beeps
   //Code will not proceed past here if this function is uncommented!
 
-  //Arm OneShot125 motors
-  m1_command_PWM = 125; //Command OneShot125 ESC from 125 to 250us pulse length
-  m2_command_PWM = 125;
-  m3_command_PWM = 125;
-  m4_command_PWM = 125;
-  m5_command_PWM = 125;
-  m6_command_PWM = 125;
-  armMotors(); //Loop over commandMotors() until ESCs happily arm
   
   //Indicate entering main loop with 3 quick blinks
   setupBlink(3,160,70); //numBlinks, upTime (ms), downTime (ms)
@@ -365,7 +371,9 @@ void setup() {
                                                   
 void loop() {
   //Keep track of what time it is and how much time has elapsed since the last loop
-  prev_time = current_time;      
+  armed_last = armed;
+  prev_time = current_time;   
+
   current_time = micros();      
   dt = (current_time - prev_time)/1000000.0;
 
@@ -374,7 +382,7 @@ void loop() {
   //Print data at 100hz (uncomment one at a time for troubleshooting) - SELECT ONE:
   printRadioData();     //Prints radio pwm values (expected: 1000 to 2000)
   //printDesiredState();  //Prints desired vehicle state commanded in either degrees or deg/sec (expected: +/- maxAXIS for roll, pitch, yaw; 0 to 1 for throttle)
-  //printGyroData();      //Prints filtered gyro data direct from IMU (expected: ~ -250 to 250, 0 at rest)
+  printGyroData();      //Prints filtered gyro data direct from IMU (expected: ~ -250 to 250, 0 at rest)
   //printAccelData();     //Prints filtered accelerometer data direct from IMU (expected: ~ -2 to 2; x,y 0 when level, z 1 when level)
   //printMagData();       //Prints filtered magnetometer data direct from IMU (expected: ~ -300 to 300)
   //printRollPitchYaw();  //Prints roll, pitch, and yaw angles in degrees from Madgwick filter (expected: degrees, 0 when level)
@@ -408,8 +416,8 @@ void loop() {
 
   //Set Status LEDS
   setLEDS();
+  setBuzzer();
   //Command actuators
-  commandMotors(); //Sends command pulses to each motor pin using OneShot125 protocol
   servo1.write(s1_command_PWM); //Writes PWM value to servo object
   servo2.write(s2_command_PWM);
   servo3.write(s3_command_PWM);
@@ -472,12 +480,11 @@ void controlMixer() {
 
 void updateStatus() {
   //DESCRIPTION: Check if the throttle cut is off and the throttle input is low to prepare for flight.
-  if ((channel_5_pwm < 1500) && (channel_1_pwm < 1200)) {
+  if ((channel_5_pwm < 1500) && (channel_1_pwm < throt_lim)) {
     armed = true;
   }
 
   if(channel_5_pwm >= 1500){
-
     armed = false;
   }
 
@@ -674,16 +681,18 @@ void controlANGLE() {
   //Roll
 
 // Set Integrators to zero drone is not armed.
-  if(!armed){
+ /* if(!armed){
     integral_roll = 0;
     integral_pitch = 0;
     integral_yaw = 0;
-  }
+  }*/
 // ROLL
   error_roll = roll_des - roll_IMU;
   integral_roll = integral_roll_prev + error_roll*dt;
- // if (channel_1_pwm < 1060) {   //Don't let integrator build if throttle is too low
- // }
+  if (channel_1_pwm < throt_lim) {   //Don't let integrator build if throttle is too low
+     integral_roll = 0;
+
+  }
   integral_roll = constrain(integral_roll, -i_limit, i_limit); //Saturate integrator to prevent unsafe buildup
   derivative_roll = GyroX;
   roll_PID = (Kp_roll_angle*error_roll + Ki_roll_angle*integral_roll - Kd_roll_angle*derivative_roll); //Scaled by .01 to bring within -1 to 1 range
@@ -691,9 +700,9 @@ void controlANGLE() {
   //Pitch
   error_pitch = pitch_des - pitch_IMU;
   integral_pitch = integral_pitch_prev + error_pitch*dt;
- // if (channel_1_pwm < 1060) {   //Don't let integrator build if throttle is too low
-  //  integral_pitch = 0;
- // }
+  if (channel_1_pwm < throt_lim) {   //Don't let integrator build if throttle is too low
+    integral_pitch = 0;
+  }
   integral_pitch = constrain(integral_pitch, -i_limit, i_limit); //Saturate integrator to prevent unsafe buildup
   derivative_pitch = GyroY;
   pitch_PID = (Kp_pitch_angle*error_pitch + Ki_pitch_angle*integral_pitch - Kd_pitch_angle*derivative_pitch); //Scaled by .01 to bring within -1 to 1 range
@@ -701,9 +710,9 @@ void controlANGLE() {
   //Yaw, stablize on rate from GyroZ
   error_yaw = yaw_des - GyroZ;
   integral_yaw = integral_yaw_prev + error_yaw*dt;
-  //if (channel_1_pwm < 1060) {   //Don't let integrator build if throttle is too low
-  //  integral_yaw = 0;
- // }
+  if (channel_1_pwm < throt_lim) {   //Don't let integrator build if throttle is too low
+    integral_yaw = 0;
+  }
   integral_yaw = constrain(integral_yaw, -i_limit, i_limit); //Saturate integrator to prevent unsafe buildup
   derivative_yaw = (error_yaw - error_yaw_prev)/dt; 
   yaw_PID = (Kp_yaw*error_yaw + Ki_yaw*integral_yaw + Kd_yaw*derivative_yaw); //Scaled by .01 to bring within -1 to 1 range
@@ -991,78 +1000,7 @@ void failSafe() {
   }
 }
 
-void commandMotors() {
-  //DESCRIPTION: Send pulses to motor pins, oneshot125 protocol
-  /*
-   * My crude implimentation of OneShot125 protocol which sends 125 - 250us pulses to the ESCs (mXPin). The pulselengths being
-   * sent are mX_command_PWM, computed in scaleCommands(). This may be replaced by something more efficient in the future.
-   */
-  int wentLow = 0;
-  int pulseStart, timer;
-  int flagM1 = 0;
-  int flagM2 = 0;
-  int flagM3 = 0;
-  int flagM4 = 0;
-  int flagM5 = 0;
-  int flagM6 = 0;
-  
-  //Write all motor pins high
-  digitalWrite(m1Pin, HIGH);
-  digitalWrite(m2Pin, HIGH);
-  digitalWrite(m3Pin, HIGH);
-  digitalWrite(m4Pin, HIGH);
-  digitalWrite(m5Pin, HIGH);
-  digitalWrite(m6Pin, HIGH);
-  pulseStart = micros();
 
-  //Write each motor pin low as correct pulse length is reached
-  while (wentLow < 6 ) { //Keep going until final (6th) pulse is finished, then done
-    timer = micros();
-    if ((m1_command_PWM <= timer - pulseStart) && (flagM1==0)) {
-      digitalWrite(m1Pin, LOW);
-      wentLow = wentLow + 1;
-      flagM1 = 1;
-    }
-    if ((m2_command_PWM <= timer - pulseStart) && (flagM2==0)) {
-      digitalWrite(m2Pin, LOW);
-      wentLow = wentLow + 1;
-      flagM2 = 1;
-    }
-    if ((m3_command_PWM <= timer - pulseStart) && (flagM3==0)) {
-      digitalWrite(m3Pin, LOW);
-      wentLow = wentLow + 1;
-      flagM3 = 1;
-    }
-    if ((m4_command_PWM <= timer - pulseStart) && (flagM4==0)) {
-      digitalWrite(m4Pin, LOW);
-      wentLow = wentLow + 1;
-      flagM4 = 1;
-    } 
-    if ((m5_command_PWM <= timer - pulseStart) && (flagM5==0)) {
-      digitalWrite(m5Pin, LOW);
-      wentLow = wentLow + 1;
-      flagM5 = 1;
-    } 
-    if ((m6_command_PWM <= timer - pulseStart) && (flagM6==0)) {
-      digitalWrite(m6Pin, LOW);
-      wentLow = wentLow + 1;
-      flagM6 = 1;
-    } 
-  }
-}
-
-void armMotors() {
-  //DESCRIPTION: Sends many command pulses to the motors, to be used to arm motors in the void setup()
-  /*  
-   *  Loops over the commandMotors() function 50 times with a delay in between, simulating how the commandMotors()
-   *  function is used in the main loop. Ensures motors arm within the void setup() where there are some delays
-   *  for other processes that sometimes prevent motors from arming.
-   */
-  for (int i = 0; i <= 50; i++) {
-    commandMotors();
-    delay(2);
-  }
-}
 
 void calibrateESCs() {
   //DESCRIPTION: Used in void setup() to allow standard ESC calibration procedure with the radio to take place.
@@ -1108,7 +1046,6 @@ void calibrateESCs() {
       servo5.write(s5_command_PWM);
       servo6.write(s6_command_PWM);
       servo7.write(s7_command_PWM);
-      commandMotors(); //Sends command pulses to each motor pin using OneShot125 protocol
       
       //printRadioData(); //Radio pwm values (expected: 1000 to 2000)
       
@@ -1253,6 +1190,31 @@ void loopRate(int freq) {
   }
 }
 
+
+void setBuzzer(){
+
+if(armed!=armed_last){
+
+  if(armed){
+    tone(buzzPin,800,3000);
+
+  }else{
+    tone(buzzPin,200,500);
+  }
+
+
+}
+
+
+/*if(micros()-buzzer_timer > buzzer_delay){
+  
+  tone(buzzPin,600,1000);
+  buzzer_timer = micros();
+}*/
+
+
+
+}
 void setLEDS(){
   
   if(armed){
