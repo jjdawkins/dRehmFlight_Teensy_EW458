@@ -26,7 +26,7 @@ Everyone that sends me pictures and videos of your flying creations! -Nick
 
 */
 #include <Arduino.h>
-
+#include <MAVLink.h>
 
 //========================================================================================================================//
 //                                                 USER-SPECIFIED DEFINES                                                 //                                                                 
@@ -85,6 +85,7 @@ static const char num_DSM_channels = 6; //If using DSM RX, change this to match 
 int red = 0xFF;
 int yellow = 0xFFFF;
 int green = 0xFF00;
+int blue = 0xFF0000;
 int white = 0xFFFFFF;
 int off = 0x00;
 
@@ -200,19 +201,17 @@ unsigned long blink_counter, blink_delay;
 unsigned long led_timer, led_delay;
 unsigned long buzzer_timer, buzzer_delay;
 
+unsigned long timer_1Hz, timer_10Hz, timer_50Hz;
+
 bool buzzerOn;
 bool blinkAlternate;
+bool ledsOn;
 
 //Radio communication:
 unsigned long channel_1_pwm, channel_2_pwm, channel_3_pwm, channel_4_pwm, channel_5_pwm, channel_6_pwm;
 unsigned long channel_1_pwm_prev, channel_2_pwm_prev, channel_3_pwm_prev, channel_4_pwm_prev;
 
-#if defined USE_SBUS_RX
-  SBUS sbus(Serial5);
-  uint16_t sbusChannels[16];
-  bool sbusFailSafe;
-  bool sbusLostFrame;
-#endif
+
 #if defined USE_DSM_RX
   //DSM1024 DSM;
   DSM2048 DSM;
@@ -232,6 +231,7 @@ float q3 = 0.0f;
 
 //Normalized desired state:
 float thro_des, roll_des, pitch_des, yaw_des;
+float thro_cmd, roll_cmd, pitch_cmd, yaw_cmd, mode_cmd;
 float roll_passthru, pitch_passthru, yaw_passthru;
 
 //Controller:
@@ -249,6 +249,7 @@ int s1_command_PWM, s2_command_PWM, s3_command_PWM, s4_command_PWM, s5_command_P
 bool armedFly = false;
 bool armed = false;
 bool armed_last = false;
+bool guided = false;
 
 
 Adafruit_BNO08x  bno08x(BNO08X_RESET);
@@ -293,6 +294,7 @@ void quaternionToEulerGI(sh2_GyroIntegratedRV_t* rotational_vector, euler_t* ypr
 
 void setup() {
   Serial.begin(500000); //USB serial
+  Serial5.begin(115200);
   delay(500);
   
   //Initialize all pins
@@ -353,7 +355,9 @@ void setup() {
 
   //calibrateESCs(); //PROPS OFF. Uncomment this to calibrate your ESCs by setting throttle stick to max, powering on, and lowering throttle to zero after the beeps
   //Code will not proceed past here if this function is uncommented!
-
+  timer_1Hz = micros();
+  timer_10Hz = micros();
+  timer_50Hz = micros();
   
   //Indicate entering main loop with 3 quick blinks
   setupBlink(3,160,70); //numBlinks, upTime (ms), downTime (ms)
@@ -380,9 +384,9 @@ void loop() {
   loopBlink(); //Indicate we are in main loop with short blink every 1.5 seconds
 
   //Print data at 100hz (uncomment one at a time for troubleshooting) - SELECT ONE:
-  printRadioData();     //Prints radio pwm values (expected: 1000 to 2000)
-  //printDesiredState();  //Prints desired vehicle state commanded in either degrees or deg/sec (expected: +/- maxAXIS for roll, pitch, yaw; 0 to 1 for throttle)
-  printGyroData();      //Prints filtered gyro data direct from IMU (expected: ~ -250 to 250, 0 at rest)
+  //printRadioData();     //Prints radio pwm values (expected: 1000 to 2000)
+  printDesiredState();  //Prints desired vehicle state commanded in either degrees or deg/sec (expected: +/- maxAXIS for roll, pitch, yaw; 0 to 1 for throttle)
+  //printGyroData();      //Prints filtered gyro data direct from IMU (expected: ~ -250 to 250, 0 at rest)
   //printAccelData();     //Prints filtered accelerometer data direct from IMU (expected: ~ -2 to 2; x,y 0 when level, z 1 when level)
   //printMagData();       //Prints filtered magnetometer data direct from IMU (expected: ~ -300 to 300)
   //printRollPitchYaw();  //Prints roll, pitch, and yaw angles in degrees from Madgwick filter (expected: degrees, 0 when level)
@@ -392,6 +396,8 @@ void loop() {
   //printLoopRate();      //Prints the time between loops in microseconds (expected: microseconds between loop iterations)
   //printStatusData();
 
+
+  receiveSerial();
 
   // Get arming status
   updateStatus(); //Check if the throttle cut is off and throttle is low.
@@ -429,6 +435,10 @@ void loop() {
   //Get vehicle commands for next loop iteration
   getCommands(); //Pulls current available radio commands
   failSafe(); //Prevent failures in event of bad receiver connection, defaults to failsafe values assigned in setup
+
+
+  sendTelemetry();
+
 
   //Regulate loop rate
   loopRate(2000); //Do not exceed 2000Hz, all filter parameters tuned to 2000Hz by default
@@ -486,6 +496,12 @@ void updateStatus() {
 
   if(channel_5_pwm >= 1500){
     armed = false;
+  }
+
+  if(channel_6_pwm >=1500){
+    guided = true;
+  }else{
+    guided = false;
   }
 
 }
@@ -580,24 +596,6 @@ void getIMUdata() {
             yaw_IMU = ypr.yaw;            
         //break;
 
-
-      /*case SH2_GYROSCOPE_CALIBRATED:
-        GyroX = sensorValue.un.gyroscope.x;
-        GyroY = sensorValue.un.gyroscope.y;
-        GyroZ = sensorValue.un.gyroscope.z;*/
-
-      //case SH2_GYROSCOPE_UNCALIBRATED:
-       // GyroX = sensorValue.un.gyroscopeUncal.x;
-       // GyroY = sensorValue.un.gyroscopeUncal.y;
-       // GyroZ = sensorValue.un.gyroscopeUncal.z;
-        //break;
-
-      /*case SH2_RAW_GYROSCOPE:
-        GyroX = sensorValue.un.rawGyroscope.x;
-        GyroY = sensorValue.un.rawGyroscope.y;
-        GyroZ = sensorValue.un.rawGyroscope.z;*/
-        //break;
-
       case SH2_ACCELEROMETER:
         AccX = sensorValue.un.accelerometer.x;
         AccY = sensorValue.un.accelerometer.y;
@@ -647,22 +645,40 @@ void getDesState() {
    * (rate mode). yaw_des is scaled to be within max yaw in degrees/sec. Also creates roll_passthru, pitch_passthru, and
    * yaw_passthru variables, to be used in commanding motors/servos with direct unstabilized commands in controlMixer().
    */
-  thro_des = (channel_1_pwm - 1000.0)/1000.0; //Between 0 and 1
-  roll_des = (channel_2_pwm - 1500.0)/500.0; //Between -1 and 1
-  pitch_des = (channel_3_pwm - 1500.0)/500.0; //Between -1 and 1
-  yaw_des = (channel_4_pwm - 1500.0)/500.0; //Between -1 and 1
-  roll_passthru = roll_des/2.0; //Between -0.5 and 0.5
-  pitch_passthru = pitch_des/2.0; //Between -0.5 and 0.5
-  yaw_passthru = yaw_des/2.0; //Between -0.5 and 0.5
-  
-  //Constrain within normalized bounds
-  thro_des = constrain(thro_des, 0.0, 1.0); //Between 0 and 1
-  roll_des = constrain(roll_des, -1.0, 1.0)*maxRoll; //Between -maxRoll and +maxRoll
-  pitch_des = constrain(pitch_des, -1.0, 1.0)*maxPitch; //Between -maxPitch and +maxPitch
-  yaw_des = constrain(yaw_des, -1.0, 1.0)*maxYaw; //Between -maxYaw and +maxYaw
-  roll_passthru = constrain(roll_passthru, -0.5, 0.5);
-  pitch_passthru = constrain(pitch_passthru, -0.5, 0.5);
-  yaw_passthru = constrain(yaw_passthru, -0.5, 0.5);
+
+  if(guided){
+
+    thro_des = thro_cmd;
+    roll_des = roll_cmd;
+    pitch_des = pitch_cmd;
+    yaw_des = yaw_cmd;
+
+    thro_des = constrain(thro_des, 0.0, 1.0); //Between 0 and 1
+    roll_des = constrain(roll_des, -maxRoll, maxRoll); //Between -maxRoll and +maxRoll
+    pitch_des = constrain(pitch_des, -maxPitch, maxPitch); //Between -maxPitch and +maxPitch
+    yaw_des = constrain(yaw_des, -maxYaw, maxYaw); //Between -maxYaw and +maxYaw
+
+
+  }else{
+    thro_des = (channel_1_pwm - 1000.0)/1000.0; //Between 0 and 1
+    roll_des = (channel_2_pwm - 1500.0)/500.0; //Between -1 and 1
+    pitch_des = (channel_3_pwm - 1500.0)/500.0; //Between -1 and 1
+    yaw_des = (channel_4_pwm - 1500.0)/500.0; //Between -1 and 1
+    roll_passthru = roll_des/2.0; //Between -0.5 and 0.5
+    pitch_passthru = pitch_des/2.0; //Between -0.5 and 0.5
+    yaw_passthru = yaw_des/2.0; //Between -0.5 and 0.5
+    
+    //Constrain within normalized bounds
+    thro_des = constrain(thro_des, 0.0, 1.0); //Between 0 and 1
+    roll_des = constrain(roll_des, -1.0, 1.0)*maxRoll; //Between -maxRoll and +maxRoll
+    pitch_des = constrain(pitch_des, -1.0, 1.0)*maxPitch; //Between -maxPitch and +maxPitch
+    yaw_des = constrain(yaw_des, -1.0, 1.0)*maxYaw; //Between -maxYaw and +maxYaw
+    roll_passthru = constrain(roll_passthru, -0.5, 0.5);
+    pitch_passthru = constrain(pitch_passthru, -0.5, 0.5);
+    yaw_passthru = constrain(yaw_passthru, -0.5, 0.5);
+
+  }
+
 }
 
 void controlANGLE() {
@@ -1078,29 +1094,33 @@ float floatFaderLinear(float param, float param_min, float param_max, float fade
   return param;
 }
 
-float floatFaderLinear2(float param, float param_des, float param_lower, float param_upper, float fadeTime_up, float fadeTime_down, int loopFreq){
+/*float floatFaderLinear2(float param, float param_des, float param_lower, float param_upper, float fadeTime_up, float fadeTime_down, int loopFreq){
   //DESCRIPTION: Linearly fades a float type variable from its current value to the desired value, up or down
-  /*  
+  *  
    *  Takes in a float variable to be modified, desired new position, upper value, lower value, fade time, and the loop frequency 
    *  and linearly fades that param variable up or down to the desired value. This function can be called in controlMixer()
    *  to fade up or down between flight modes monitored by an auxillary radio channel. For example, if channel_6_pwm is being 
    *  monitored to switch between two dynamic configurations (hover and forward flight), this function can be called within the logical 
    *  statements in order to fade controller gains, for example between the two dynamic configurations. 
    *  
-   */
+  
   if (param > param_des) { //Need to fade down to get to desired
     float diffParam = (param_upper - param_des)/(fadeTime_down*loopFreq);
     param = param - diffParam;
   }
   else if (param < param_des) { //Need to fade up to get to desired
     float diffParam = (param_des - param_lower)/(fadeTime_up*loopFreq);
-    param = param + diffParam;
+    param = param + diff;  // Send buffer over UDP
+
+
+  lastSent = millis();
   }
+
 
   param = constrain(param, param_lower, param_upper); //Constrain param within max bounds
   
   return param;
-}
+}*/
 
 void switchRollYaw(int reverseRoll, int reverseYaw) {
   //DESCRIPTION: Switches roll_des and yaw_des variables for tailsitter-type configurations
@@ -1171,6 +1191,96 @@ void throttleCut() {
 }
 
 
+void receiveSerial(){
+
+  mavlink_message_t msg;
+  mavlink_status_t status;
+  while(Serial5.available()>0){
+    
+      uint8_t c = Serial5.read();
+
+      if(mavlink_parse_char(MAVLINK_COMM_0,c,&msg,&status)){
+          //.printf("Received message with ID %d, sequence: %d from component %d of system %d\n\r", msg.msgid, msg.seq, msg.compid, msg.sysid);        
+          //Serial.println("Parse Success");
+          switch(msg.msgid){
+
+            case MAVLINK_MSG_ID_MANUAL_SETPOINT:
+            {
+                mavlink_manual_setpoint_t manual_setpoint;
+                mavlink_msg_manual_setpoint_decode(&msg, &manual_setpoint);
+                
+                roll_cmd = manual_setpoint.roll;
+                pitch_cmd = manual_setpoint.pitch;
+                yaw_cmd = manual_setpoint.yaw;
+                thro_cmd = manual_setpoint.thrust;
+                mode_cmd = manual_setpoint.mode_switch;
+                //printf("%f,%f,%f,%f\r\n",roll_cmd,pitch_cmd,yaw_cmd,thro_cmd);
+            }
+            
+          }//switch
+
+      }// if mavlink_parse_char    
+
+  
+  }//while Serial5 available
+
+
+}
+
+
+void sendTelemetry(){
+
+  if((micros() - timer_1Hz) > 1000000){
+    sendHeartbeat();
+    timer_1Hz = micros();
+  }
+
+  if((micros() - timer_50Hz) > 20000){
+    sendImu();
+    timer_50Hz = micros();
+  }
+
+}
+void sendHeartbeat() {
+
+  // Generate HEARTBEAT message buffer
+  mavlink_message_t msg;
+  uint8_t buf[MAVLINK_MAX_PACKET_LEN];
+
+  mavlink_msg_heartbeat_pack(1, MAV_COMP_ID_AUTOPILOT1, &msg, MAV_TYPE_QUADROTOR, MAV_AUTOPILOT_GENERIC, MAV_MODE_FLAG_MANUAL_INPUT_ENABLED, 0, MAV_STATE_STANDBY);
+  uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
+
+  Serial5.write(buf,len);
+
+}
+
+void sendImu() {
+
+  // Generate HEARTBEAT message buffer
+  mavlink_message_t msg;
+  uint8_t buf[MAVLINK_MAX_PACKET_LEN];
+
+
+//static inline uint16_t mavlink_msg_scaled_imu_encode(uint8_t system_id, uint8_t component_id, mavlink_message_t* msg, const mavlink_scaled_imu_t* scaled_imu)
+  mavlink_scaled_imu_t imu_msg;
+  
+  imu_msg.time_boot_ms = millis();
+  imu_msg.xacc = AccX*1e3;
+  imu_msg.yacc = AccY*1e3;
+  imu_msg.zacc = AccZ*1e3;
+  imu_msg.xgyro = GyroX*1e3;
+  imu_msg.ygyro = GyroY*1e3;
+  imu_msg.zgyro = GyroZ*1e3;
+  
+mavlink_msg_scaled_imu_encode(1,MAV_COMP_ID_AUTOPILOT1,&msg,&imu_msg);
+
+  //mavlink_msg_scaled_imu_pack();
+ // mavlink_msg_heartbeat_pack(1, MAV_COMP_ID_AUTOPILOT1, &msg, MAV_TYPE_QUADROTOR, MAV_AUTOPILOT_GENERIC, MAV_MODE_FLAG_MANUAL_INPUT_ENABLED, 0, MAV_STATE_STANDBY);
+  uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
+
+  Serial5.write(buf,len);
+
+}
 
 void loopRate(int freq) {
   //DESCRIPTION: Regulate main loop rate to specified frequency in Hz
@@ -1217,16 +1327,21 @@ if(armed!=armed_last){
 }
 void setLEDS(){
   
-  if(armed){
-    leds.fill(green,0,5);
-    leds.show();
+  if(current_time - led_timer > 10000) {
+    if(armed){
+      if(guided){
+        leds.fill(blue,0,5);
+        leds.show();   
+      }else{
+        leds.fill(green,0,5);
+        leds.show();
+      }
 
-  }else{
-    leds.fill(yellow,0,5);
-    leds.show();
-
+    }else{
+      leds.fill(yellow,0,5);
+      leds.show();
+    }
   }
-
 }
 
 void loopBlink() {
