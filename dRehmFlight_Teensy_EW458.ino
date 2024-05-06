@@ -31,11 +31,11 @@ Everyone that sends me pictures and videos of your flying creations! -Nick
 //========================================================================================================================//
 //                                                 USER-SPECIFIED DEFINES                                                 //                                                                 
 //========================================================================================================================//
+#define DEG2RAD (3.14159/180)
+#define RAD2DEG (180/3.14159)
 
 //Uncomment only one receiver type
-//#define USE_PWM_RX
-//#define USE_PPM_RX
-//#define USE_SBUS_RX
+
 #define USE_DSM_RX
 static const char num_DSM_channels = 6; //If using DSM RX, change this to match the number of transmitter channels you have
 
@@ -44,11 +44,19 @@ static const char num_DSM_channels = 6; //If using DSM RX, change this to match 
 #define BNO08X_CS 10
 #define BNO08X_INT 9
 #define BNO08X_RESET -1
+#define LED_DATAPIN 0
+#define LED_CLOCKPIN 1
+#define NUMPIXELS 10
 
-#define DEG2RAD (3.14159/180)
-#define RAD2DEG (180/3.14159)
 
-#define NUMPIXELS 5
+#define IDLE -1
+#define READY 0
+#define TAKEOFF 1
+#define HOVER 2
+#define AUTO 3
+#define MANUAL 4
+#define LAND 5
+#define ERROR 6
 
 
 
@@ -81,12 +89,16 @@ static const char num_DSM_channels = 6; //If using DSM RX, change this to match 
 
 
 //Setup gyro and accel full scale value selection and scale factor
-
+// Define Color Hex codes in BGR
 int red = 0xFF;
+int orange = 0x99FF;
 int yellow = 0xFFFF;
+int cyan = 0xFFFF00;
 int green = 0xFF00;
 int blue = 0xFF0000;
+int purple = 0xFF0099;
 int white = 0xFFFFFF;
+int white_50 = 0x99999;
 int off = 0x00;
 
 
@@ -123,13 +135,14 @@ float maxPitch = 25.0*DEG2RAD;    //Max pitch angle in degrees for angle mode (m
 float maxYaw = 160.0*DEG2RAD;     //Max yaw rate in deg/sec
 uint throt_lim = 1200;
 
+//0.2 - p 0.1 - i 0.03 -d
 
-float Kp_roll_angle = 0.2;    //Roll P-gain - angle mode 
-float Ki_roll_angle = 0.1;    //Roll I-gain - angle mode
+float Kp_roll_angle = 0.15;    //Roll P-gain - angle mode 
+float Ki_roll_angle = 0.0;    //Roll I-gain - angle mode
 float Kd_roll_angle = 0.03;   //Roll D-gain - angle mode (has no effect on controlANGLE2)
 float B_loop_roll = 0.9;      //Roll damping term for controlANGLE2(), lower is more damping (must be between 0 to 1)
-float Kp_pitch_angle = 0.2;   //Pitch P-gain - angle mode
-float Ki_pitch_angle = 0.1;   //Pitch I-gain - angle mode
+float Kp_pitch_angle = 0.15;   //Pitch P-gain - angle mode
+float Ki_pitch_angle = 0.0;   //Pitch I-gain - angle mode
 float Kd_pitch_angle = 0.03;  //Pitch D-gain - angle mode (has no effect on controlANGLE2)
 float B_loop_pitch = 0.9;     //Pitch damping term for controlANGLE2(), lower is more damping (must be between 0 to 1)
 
@@ -161,12 +174,12 @@ const int ch5Pin = 21; //gear (throttle cut)
 const int ch6Pin = 22; //aux1 (free aux channel)
 const int PPM_Pin = 15;
 //OneShot125 ESC pin outputs:
-const int buzzPin = 0;
-const int m2Pin = 1;
-const int m3Pin = 2;
-const int ledDi = 3;
+const int buzzPin = 3;
+const int m2Pin = 2;
+const int m3Pin = 5;
+//const int ledDi = 0;
 const int m5Pin = 4;
-const int ledCl = 5;
+//const int ledCl = 1;
 //PWM servo or ESC outputs:
 const int servo1Pin = 6;
 const int servo2Pin = 7;
@@ -201,7 +214,7 @@ unsigned long blink_counter, blink_delay;
 unsigned long led_timer, led_delay;
 unsigned long buzzer_timer, buzzer_delay;
 
-unsigned long timer_1Hz, timer_10Hz, timer_50Hz;
+unsigned long timer_1Hz, timer_10Hz, timer_50Hz,timer_aux;
 
 bool buzzerOn;
 bool blinkAlternate;
@@ -231,7 +244,8 @@ float q3 = 0.0f;
 
 //Normalized desired state:
 float thro_des, roll_des, pitch_des, yaw_des;
-float thro_cmd, roll_cmd, pitch_cmd, yaw_cmd, mode_cmd;
+float thro_cmd, roll_cmd, pitch_cmd, yaw_cmd;
+int mode_cmd;
 float roll_passthru, pitch_passthru, yaw_passthru;
 
 //Controller:
@@ -250,12 +264,13 @@ bool armedFly = false;
 bool armed = false;
 bool armed_last = false;
 bool guided = false;
+bool led_toggle = false;
 
 
 Adafruit_BNO08x  bno08x(BNO08X_RESET);
 sh2_SensorValue_t sensorValue;
 
-Adafruit_DotStar leds(NUMPIXELS,ledCl,ledDi,DOTSTAR_RGB);
+Adafruit_DotStar leds(NUMPIXELS,LED_DATAPIN,LED_CLOCKPIN,DOTSTAR_RGB);
 
 
 void quaternionToEuler(float qr, float qi, float qj, float qk, euler_t* ypr, bool degrees = false) {
@@ -301,9 +316,9 @@ void setup() {
   pinMode(13, OUTPUT); //Pin 13 LED blinker on board, do not modify 
   pinMode(buzzPin, OUTPUT);
  // pinMode(m2Pin, OUTPUT);
-  pinMode(ledDi, OUTPUT);
+ // pinMode(ledDi, OUTPUT);
  // pinMode(m4Pin, OUTPUT);
-  pinMode(ledCl, OUTPUT);
+ // pinMode(ledCl, OUTPUT);
 //  pinMode(m6Pin, OUTPUT);
   servo1.attach(servo1Pin, 900, 2100); //Pin, min PWM value, max PWM value
   servo2.attach(servo2Pin, 900, 2100);
@@ -356,7 +371,7 @@ void setup() {
   //calibrateESCs(); //PROPS OFF. Uncomment this to calibrate your ESCs by setting throttle stick to max, powering on, and lowering throttle to zero after the beeps
   //Code will not proceed past here if this function is uncommented!
   timer_1Hz = micros();
-  timer_10Hz = micros();
+  timer_aux = micros();
   timer_50Hz = micros();
   
   //Indicate entering main loop with 3 quick blinks
@@ -420,9 +435,7 @@ void loop() {
   //Throttle cut check
   throttleCut(); //Directly sets motor commands to low based on state of ch5
 
-  //Set Status LEDS
-  setLEDS();
-  setBuzzer();
+
   //Command actuators
   servo1.write(s1_command_PWM); //Writes PWM value to servo object
   servo2.write(s2_command_PWM);
@@ -438,6 +451,12 @@ void loop() {
 
 
   sendTelemetry();
+  //Set Status LEDS
+  if(micros()-timer_aux > 200000){
+    setLEDS();
+    setBuzzer();
+    timer_aux = micros();
+  }
 
 
   //Regulate loop rate
@@ -603,31 +622,12 @@ void getIMUdata() {
         break;
     }
 
-
   }
 
-
-
-  //LP filter accelerometer data
-  //AccX = (1.0 - B_accel)*AccX_prev + B_accel*AccX;
-  //AccY = (1.0 - B_accel)*AccY_prev + B_accel*AccY;
-  //AccZ = (1.0 - B_accel)*AccZ_prev + B_accel*AccZ;
   AccX_prev = AccX;
   AccY_prev = AccY;
   AccZ_prev = AccZ;
 
-  //Gyro
-  //GyroX = GyX / GYRO_SCALE_FACTOR; //deg/sec
-  //GyroY = GyY / GYRO_SCALE_FACTOR;
-  //GyroZ = GyZ / GYRO_SCALE_FACTOR;
-  //Correct the outputs with the calculated error values
-  //GyroX = GyroX - GyroErrorX;
-  //GyroY = GyroY - GyroErrorY;
-  //GyroZ = GyroZ - GyroErrorZ;
-  //LP filter gyro data
-  //GyroX = (1.0 - B_gyro)*GyroX_prev + B_gyro*GyroX;
-  //GyroY = (1.0 - B_gyro)*GyroY_prev + B_gyro*GyroY;
-  //GyroZ = (1.0 - B_gyro)*GyroZ_prev + B_gyro*GyroZ;
   GyroX_prev = GyroX;
   GyroY_prev = GyroY;
   GyroZ_prev = GyroZ;
@@ -1327,21 +1327,66 @@ if(armed!=armed_last){
 }
 void setLEDS(){
   
-  if(current_time - led_timer > 10000) {
     if(armed){
+
       if(guided){
-        leds.fill(blue,0,5);
-        leds.show();   
+        led_toggle = !led_toggle;
+
+        if(led_toggle){
+          switch(mode_cmd){
+
+            case (READY):{
+              leds.fill(white,0,NUMPIXELS);
+              break;
+            }
+            case (TAKEOFF):{
+              leds.fill(cyan,0,NUMPIXELS);
+              break;
+            }
+            case (HOVER):{
+              leds.fill(blue,0,NUMPIXELS);
+              break;
+            }
+            case (AUTO):{
+              leds.fill(green,0,NUMPIXELS);
+              break;
+            }  
+            case (MANUAL):{
+              leds.fill(purple,0,NUMPIXELS);
+              break;
+            }  
+            case (LAND):{
+              leds.fill(cyan,0,NUMPIXELS);
+              break;
+            }
+            case (ERROR):{
+              leds.fill(red,0,NUMPIXELS);
+              break;
+            }       
+            default:
+             leds.fill(white_50,0,NUMPIXELS);
+              break;                       
+          }
+          leds.show();
+        }// led_toggle
+        else{
+
+          leds.fill(off,0,NUMPIXELS);
+          leds.show();   
+
+        }
+        
+
       }else{
-        leds.fill(green,0,5);
+        leds.fill(white,0,NUMPIXELS);
         leds.show();
       }
 
     }else{
-      leds.fill(yellow,0,5);
+      leds.fill(yellow,0,NUMPIXELS);
       leds.show();
     }
-  }
+  
 }
 
 void loopBlink() {
